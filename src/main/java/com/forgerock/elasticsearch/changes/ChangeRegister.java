@@ -16,20 +16,14 @@ package com.forgerock.elasticsearch.changes;
     limitations under the License.
 */
 
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
-import org.elasticsearch.index.engine.Engine;
-import org.elasticsearch.index.indexing.IndexingOperationListener;
-import org.elasticsearch.index.shard.IndexShard;
-import org.elasticsearch.indices.IndicesLifecycle;
-import org.elasticsearch.indices.IndicesService;
 import org.glassfish.tyrus.server.Server;
-import org.joda.time.DateTime;
 
 import javax.websocket.DeploymentException;
 import java.io.IOException;
@@ -42,20 +36,22 @@ import java.util.Set;
 
 public class ChangeRegister {
 
+    // TODO: how to check this?
     private static final String SETTING_PRIMARY_SHARD_ONLY = "changes.primaryShardOnly";
     private static final String SETTING_PORT = "changes.port";
     private static final String SETTING_LISTEN_SOURCE = "changes.listenSource";
 
-    private final ESLogger log = Loggers.getLogger(ChangeRegister.class);
+    private final Logger log = Loggers.getLogger(ChangeRegister.class);
 
     private static final Map<String, WebSocket> LISTENERS = new HashMap<String, WebSocket>();
 
+    private final Set<Source> sources;
+
     @Inject
-    public ChangeRegister(final Settings settings, IndicesService indicesService) {
-        final boolean allShards = !settings.getAsBoolean(SETTING_PRIMARY_SHARD_ONLY, Boolean.FALSE);
+    public ChangeRegister(final Settings settings, final ChangeForwarder forwarder) {
         final int port = settings.getAsInt(SETTING_PORT, 9400);
         final String[] sourcesStr = settings.getAsArray(SETTING_LISTEN_SOURCE, new String[]{"*"});
-        final Set<Source> sources = new HashSet<>();
+        sources = new HashSet<>();
         for(String sourceStr : sourcesStr) {
             sources.add(new Source(sourceStr));
         }
@@ -85,124 +81,71 @@ public class ChangeRegister {
             throw new RuntimeException(e);
         }
 
-        indicesService.indicesLifecycle().addListener(new IndicesLifecycle.Listener() {
-            @Override
-            public void afterIndexShardStarted(IndexShard indexShard) {
-                final String indexName = indexShard.routingEntry().getIndex();
-                if (allShards || indexShard.routingEntry().primary()) {
+        forwarder.setRegister(this);
+    }
 
-                    indexShard.indexingService().addListener(new IndexingOperationListener() {
-                        @Override
-                        public void postCreate(Engine.Create create) {
-                            ChangeEvent change=new ChangeEvent(
-                                    create.id(),
-                                    create.type(),
-                                    new DateTime(),
-                                    ChangeEvent.Operation.CREATE,
-                                    create.version(),
-                                    create.source()
-                            );
+    private boolean filter(String index, String type, String id, Source source) {
+        if (source.getIndices() != null && !source.getIndices().contains(index)) {
+            return false;
+        }
 
-                            addChange(change);
-                        }
+        if (source.getTypes() != null && !source.getTypes().contains(type)) {
+            return false;
+        }
 
-                        @Override
-                        public void postDelete(Engine.Delete delete) {
-                            ChangeEvent change=new ChangeEvent(
-                                    delete.id(),
-                                    delete.type(),
-                                    new DateTime(),
-                                    ChangeEvent.Operation.DELETE,
-                                    delete.version(),
-                                    null
-                            );
+        if (source.getIds() != null && !source.getIds().contains(id)) {
+            return false;
+        }
 
-                            addChange(change);
-                        }
+        return true;
+    }
 
-                        @Override
-                        public void postIndex(Engine.Index index, boolean created) {
+    private boolean filter(ChangeEvent change) {
+        for (Source source : sources) {
+            if (filter(change.getIndexName(), change.getType(), change.getId(), source)) {
+                return true;
+            }
+        }
 
-                            ChangeEvent change=new ChangeEvent(
-                                    index.id(),
-                                    index.type(),
-                                    new DateTime(),
-                                    ChangeEvent.Operation.INDEX,
-                                    index.version(),
-                                    index.source()
-                            );
+        return false;
+    }
 
-                            addChange(change);
-                        }
+    void addChange(ChangeEvent change) {
 
-                        private boolean filter(String index, String type, String id, Source source) {
-                            if (source.getIndices() != null && !source.getIndices().contains(index)) {
-                                return false;
-                            }
+        if (!filter(change)) {
+            return;
+        }
 
-                            if (source.getTypes() != null && !source.getTypes().contains(type)) {
-                                return false;
-                            }
+        String message;
+        try {
+            XContentBuilder builder = new XContentBuilder(JsonXContent.jsonXContent, new BytesStreamOutput());
+            builder.startObject()
+                    .field("_index", change.getIndexName())
+                    .field("_type", change.getType())
+                    .field("_id", change.getId())
+                    .field("_timestamp", change.getTimestamp())
+                    .field("_version", change.getVersion())
+                    .field("_operation", change.getOperation().toString());
+            if (change.getSource() != null) {
+                builder.rawField("_source", change.getSource());
+            }
+            builder.endObject();
 
-                            if (source.getIds() != null && !source.getIds().contains(id)) {
-                                return false;
-                            }
+            message = builder.string();
+        } catch (IOException e) {
+            log.error("Failed to write JSON", e);
+            return;
+        }
 
-                            return true;
-                        }
-
-                        private boolean filter(String index, ChangeEvent change) {
-                            for (Source source : sources) {
-                                if (filter(index, change.getType(), change.getId(), source)) {
-                                    return true;
-                                }
-                            }
-
-                            return false;
-                        }
-
-                        private void addChange(ChangeEvent change) {
-
-                            if (!filter(indexName, change)) {
-                                return;
-                            }
-
-                            String message;
-                            try {
-                                XContentBuilder builder = new XContentBuilder(JsonXContent.jsonXContent, new BytesStreamOutput());
-                                builder.startObject()
-                                        .field("_index", indexName)
-                                        .field("_type", change.getType())
-                                        .field("_id", change.getId())
-                                        .field("_timestamp", change.getTimestamp())
-                                        .field("_version", change.getVersion())
-                                        .field("_operation", change.getOperation().toString());
-                                if (change.getSource() != null) {
-                                    builder.rawField("_source", change.getSource());
-                                }
-                                builder.endObject();
-
-                                message = builder.string();
-                            } catch (IOException e) {
-                                log.error("Failed to write JSON", e);
-                                return;
-                            }
-
-                            for (WebSocket listener : LISTENERS.values()) {
-                                try {
-                                    listener.sendMessage(message);
-                                } catch (Exception e) {
-                                    log.error("Failed to send message", e);
-                                }
-
-                            }
-
-                        }
-                    });
-                }
+        for (WebSocket listener : LISTENERS.values()) {
+            try {
+                listener.sendMessage(message);
+            } catch (Exception e) {
+                log.error("Failed to send message", e);
             }
 
-        });
+        }
+
     }
 
     public static void registerListener(WebSocket webSocket) {
@@ -212,4 +155,5 @@ public class ChangeRegister {
     public static void unregisterListener(WebSocket webSocket) {
         LISTENERS.remove(webSocket.getId());
     }
+
 }

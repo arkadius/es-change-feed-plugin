@@ -17,25 +17,32 @@ package com.forgerock.elasticsearch.changes;
 */
 
 import com.google.common.collect.ImmutableList;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.inject.Module;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.index.IndexModule;
 import org.elasticsearch.plugins.Plugin;
 
 import java.util.Collection;
 
 public class ChangesFeedPlugin extends Plugin {
-    private final ESLogger log = Loggers.getLogger(ChangesFeedPlugin.class);
+    private final Logger log = Loggers.getLogger(ChangesFeedPlugin.class);
 
+    private final ChangeForwarder forwarder = new ChangeForwarder();
 
     public ChangesFeedPlugin() {
         log.info("Starting Changes Plugin");
     }
 
     @Override
-    public Collection<Module> nodeModules() {
-        Module module = new ChangesModule();
+    public Collection<Module> createGuiceModules() {
+        Module module = new ChangesModule(forwarder);
         return ImmutableList.of(module);
+    }
+
+    @Override
+    public void onIndexModule(IndexModule indexModule) {
+        forwarder.onIndexModule(indexModule);
     }
 
     public String description() {

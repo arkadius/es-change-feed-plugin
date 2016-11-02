@@ -17,15 +17,22 @@ package com.forgerock.elasticsearch.changes;
 */
 
 import org.elasticsearch.common.inject.AbstractModule;
-import org.elasticsearch.common.logging.ESLogger;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.logging.Loggers;
 
 public class ChangesModule extends AbstractModule {
-    private final ESLogger log = Loggers.getLogger(ChangesModule.class);
-    
+    private final Logger log = Loggers.getLogger(ChangesModule.class);
+
+    private final ChangeForwarder forwarder;
+
+    public ChangesModule(ChangeForwarder forwarder) {
+        this.forwarder = forwarder;
+    }
+
     @Override
     protected void configure() {
         log.info("Binding Changes Plugin");
+        bind(ChangeForwarder.class).toInstance(forwarder);
         bind(ChangeRegister.class).asEagerSingleton();
     }
 }

@@ -21,6 +21,7 @@ import org.joda.time.DateTime;
 
 public class ChangeEvent {
     private final String id;
+    private final String indexName;
     private final String type;
     private final DateTime timestamp;
     private final Operation operation;
@@ -31,8 +32,9 @@ public class ChangeEvent {
         INDEX,CREATE,DELETE
     }
 
-    public ChangeEvent(String id, String type, DateTime timestamp, Operation operation, long version, BytesReference source) {
+    public ChangeEvent(String id, String indexName, String type, DateTime timestamp, Operation operation, long version, BytesReference source) {
         this.id = id;
+        this.indexName = indexName;
         this.type = type;
         this.timestamp = timestamp;
         this.operation = operation;
@@ -42,6 +44,10 @@ public class ChangeEvent {
 
     public String getId() {
         return id;
+    }
+
+    public String getIndexName() {
+        return indexName;
     }
 
     public Operation getOperation() {
